@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>送迎ルート作成（Google Maps）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 0; }
+    header { padding: 14px 16px; border-bottom: 1px solid #e5e7eb; }
+    .wrap { display: grid; grid-template-columns: 420px 1fr; gap: 12px; padding: 12px; }
+    .panel { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; }
+    label { display:block; font-size: 12px; color:#374151; margin-top: 10px; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    textarea { min-height: 170px; resize: vertical; }
+    .row { display:flex; gap: 10px; align-items: center; margin-top: 10px; }
+    button { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 600; }
+    button.primary { border-color:#111827; }
+    .muted { color:#6b7280; font-size: 12px; line-height: 1.4; margin-top: 8px; }
+    #map { height: calc(100vh - 90px); border: 1px solid #e5e7eb; border-radius: 10px; }
+    .summary { font-size: 13px; color:#111827; line-height: 1.6; margin-top: 10px; }
+    ol { margin: 8px 0 0 18px; padding: 0; }
+    .pill { display:inline-block; padding: 2px 8px; border: 1px solid #e5e7eb; border-radius: 999px; font-size: 12px; color:#374151; }
+    .error { color:#b91c1c; font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  </style>
+
+  <!-- ここに自分のAPIキーを入れる（HTTPリファラ制限推奨） -->
+  <script
+    src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&v=weekly&libraries=places"
+    defer
+  ></script>
+</head>
+
+<body>
+  <header>
+    <div style="display:flex; gap:10px; align-items: baseline; justify-content: space-between;">
+      <div>
+        <strong>送迎ルート作成</strong>
+        <span class="pill">DirectionsService + 経由地最適化</span>
+      </div>
+      <div class="muted">例：営業所 → 複数停留 → 病院（または往復）</div>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="panel">
+      <label>出発地（営業所など）</label>
+      <input id="origin" placeholder="例：名古屋駅 / 愛知県安城市〇〇 / 緯度経度でもOK" />
+
+      <label>目的地（病院など）</label>
+      <input id="destination" placeholder="例：ヨナハ丘の上病院 / 四日市駅 / 出発地と同じでもOK" />
+
+      <label>経由地（1行=1地点）</label>
+      <textarea id="stops" placeholder="例：
+〇〇町 〇〇様宅
+△△市 △△マンション
+□□区 □□バス停"></textarea>
+
+      <div class="row">
+        <label style="margin:0; display:flex; gap:8px; align-items:center;">
+          <input type="checkbox" id="optimize" checked />
+          経由地の順番を最適化する
+        </label>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="btnRoute">ルート計算</button>
+        <button id="btnClear">クリア</button>
+        <button id="btnShare" title="Googleマップで開くURLを作る">共有URL作成</button>
+      </div>
+
+      <div class="muted">
+        ・経由地最適化は便利だけど、上限（地点数）と課金区分に注意。<br/>
+        ・大量の停留所/複数台/時間帯制約までやるなら Route Optimization API が本命。<br/>
+      </div>
+
+      <div id="error" class="error"></div>
+
+      <div class="summary" id="summary"></div>
+      <div class="summary">
+        <strong>最適化後の順番</strong>
+        <ol id="order"></ol>
+      </div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <script>
+    // Google Maps JS API の読み込み完了を待つ
+    window.addEventListener("load", () => {
+      const wait = () => {
+        if (!window.google || !google.maps) return setTimeout(wait, 60);
+        initApp();
+      };
+      wait();
+    });
+
+    function initApp() {
+      const originEl = document.getElementById("origin");
+      const destinationEl = document.getElementById("destination");
+      const stopsEl = document.getElementById("stops");
+      const optimizeEl = document.getElementById("optimize");
+      const errorEl = document.getElementById("error");
+      const summaryEl = document.getElementById("summary");
+      const orderEl = document.getElementById("order");
+
+      // オートコンプリート（入力ミス減らす）
+      new google.maps.places.Autocomplete(originEl);
+      new google.maps.places.Autocomplete(destinationEl);
+
+      const map = new google.maps.Map(document.getElementById("map"), {
+        center: { lat: 35.6812, lng: 139.7671 },
+        zoom: 11,
+        mapTypeControl: false,
+      });
+
+      const directionsService = new google.maps.DirectionsService();
+      const directionsRenderer = new google.maps.DirectionsRenderer({ map });
+
+      let lastResult = null;
+      let lastInputStops = [];
+
+      document.getElementById("btnRoute").addEventListener("click", async () => {
+        errorEl.textContent = "";
+        summaryEl.textContent = "";
+        orderEl.innerHTML = "";
+        lastResult = null;
+
+        const origin = originEl.value.trim();
+        const destination = destinationEl.value.trim();
+        const stops = parseStops(stopsEl.value);
+        lastInputStops = stops.slice();
+
+        if (!origin || !destination) {
+          errorEl.textContent = "出発地と目的地は必須です。";
+          return;
+        }
+        if (stops.length === 0) {
+          errorEl.textContent = "経由地が0件でも動くけど、目的が『送迎』なら最低1件は入れるとそれっぽい。";
+        }
+
+        // 上限注意：一般に「最大25地点（出発/目的含む）」が目安（=経由地は最大23程度）
+        const totalPoints = 2 + stops.length;
+        if (totalPoints > 25) {
+          errorEl.textContent =
+            `地点数が多すぎます（合計 ${totalPoints} 地点）。\n` +
+            `Directions の1回リクエスト上限（最大25地点目安）を超えています。\n` +
+            `→ 分割するか、Route Optimization API の検討が安全です。`;
+          return;
+        }
+
+        const waypoints = stops.map(s => ({ location: s, stopover: true }));
+
+        directionsService.route(
+          {
+            origin,
+            destination,
+            waypoints,
+            optimizeWaypoints: !!optimizeEl.checked,
+            travelMode: google.maps.TravelMode.DRIVING,
+          },
+          (result, status) => {
+            if (status !== "OK" || !result) {
+              errorEl.textContent =
+                `ルート計算に失敗：${status}\n` +
+                `・住所の表記ゆれ（番地/建物名）\n` +
+                `・地点が遠すぎ/海の上\n` +
+                `・APIキー設定/課金/制限\n` +
+                `あたりを疑うと直りやすいです。`;
+              return;
+            }
+
+            lastResult = result;
+            directionsRenderer.setDirections(result);
+
+            // 合計距離・時間
+            const route = result.routes[0];
+            let meters = 0;
+            let seconds = 0;
+            route.legs.forEach(leg => {
+              meters += (leg.distance?.value || 0);
+              seconds += (leg.duration?.value || 0);
+            });
+
+            const km = (meters / 1000).toFixed(1);
+            const min = Math.round(seconds / 60);
+
+            summaryEl.innerHTML =
+              `<div><strong>合計</strong>：${km} km / 約 ${min} 分</div>` +
+              `<div class="muted">交通状況を強く反映させたい場合は別API/別SKU扱いになることがあります。</div>`;
+
+            // 最適化後の順番（waypoint_order は「入力waypointsの並び替え結果」）
+            const order = route.waypoint_order || [];
+            const optimizedStops = order.length
+              ? order.map(i => lastInputStops[i])
+              : lastInputStops.slice();
+
+            renderOrderList(orderEl, origin, optimizedStops, destination);
+
+            if (order.length) {
+              const note = document.createElement("div");
+              note.className = "muted";
+              note.textContent = "※『最適化』ONのとき、経由地の順番が入れ替わります。";
+              orderEl.parentElement.appendChild(note);
+            }
+          }
+        );
+      });
+
+      document.getElementById("btnClear").addEventListener("click", () => {
+        originEl.value = "";
+        destinationEl.value = "";
+        stopsEl.value = "";
+        errorEl.textContent = "";
+        summaryEl.textContent = "";
+        orderEl.innerHTML = "";
+        directionsRenderer.setDirections({ routes: [] });
+        lastResult = null;
+        lastInputStops = [];
+      });
+
+      document.getElementById("btnShare").addEventListener("click", async () => {
+        errorEl.textContent = "";
+        const origin = originEl.value.trim();
+        const destination = destinationEl.value.trim();
+        const stops = parseStops(stopsEl.value);
+
+        if (!origin || !destination) {
+          errorEl.textContent = "共有URLを作るには、出発地と目的地が必要です。";
+          return;
+        }
+
+        // ルート計算済みなら「最適化後の順」でURL化
+        let stopsForUrl = stops;
+        if (lastResult?.routes?.[0]) {
+          const order = lastResult.routes[0].waypoint_order || [];
+          if (order.length) stopsForUrl = order.map(i => stops[i]);
+        }
+
+        const url = makeGoogleMapsDirectionsUrl(origin, destination, stopsForUrl);
+        // クリップボードへ
+        try {
+          await navigator.clipboard.writeText(url);
+          summaryEl.innerHTML = `<div><strong>共有URL</strong>をコピーしました（Googleマップで開けます）</div><div class="muted">URLはコード内の makeGoogleMapsDirectionsUrl を参照</div>`;
+        } catch {
+          // だめなら表示
+          summaryEl.innerHTML = `<div><strong>共有URL</strong>（コピーできない場合は手動で）</div><div style="word-break:break-all">${escapeHtml(url)}</div>`;
+        }
+      });
+
+      function parseStops(text) {
+        return text
+          .split("\n")
+          .map(s => s.trim())
+          .filter(Boolean);
+      }
+
+      function renderOrderList(ol, origin, stops, destination) {
+        ol.innerHTML = "";
+        const items = [origin, ...stops, destination];
+        items.forEach((t) => {
+          const li = document.createElement("li");
+          li.textContent = t;
+          ol.appendChild(li);
+        });
+      }
+
+      // Googleマップで開く「経路URL」
+      // 注意：Googleマップ側にも経由地上限があります（多すぎると開けない/省略される場合あり）
+      function makeGoogleMapsDirectionsUrl(origin, destination, stops) {
+        const base = "https://www.google.com/maps/dir/?api=1";
+        const params = new URLSearchParams();
+        params.set("origin", origin);
+        params.set("destination", destination);
+        if (stops.length) params.set("waypoints", stops.join("|"));
+        params.set("travelmode", "driving");
+        return `${base}&${params.toString()}`;
+      }
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>"']/g, c => ({
+          "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+        }[c]));
+      }
+    }
+  </script>
+</body>
+</html>
