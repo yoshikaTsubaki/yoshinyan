@@ -31,7 +31,7 @@
   <header>
     <div style="display:flex; gap:10px; align-items: baseline; justify-content: space-between;">
       <div>
-        <strong>送迎ルート作成</strong>
+        <strong>ヒカリヒューマン送迎ルート作成</strong>
         <span class="pill">DirectionsService + 経由地最適化</span>
       </div>
       <div class="muted">例：営業所 → 複数停留 → 病院（または往復）</div>
@@ -63,7 +63,7 @@
         <button class="primary" id="btnRoute">ルート計算</button>
         <button id="btnClear">クリア</button>
         <button id="btnShare" title="Googleマップで開くURLを作る">共有URL作成</button>
-      </div>
+      <button id="btnExportCsv" type="button">CSV出力</button>/div>
 
       <div class="muted">
         ・経由地最適化は便利だけど、上限（地点数）と課金区分に注意。<br/>
@@ -280,6 +280,75 @@
         }[c]));
       }
     }
-  </script>
+  <script>
+let lastDirections = null;
+
+// どこかで directionsService.route の成功時に lastDirections = result; を入れてね
+// もし既に result を表示してる関数があるなら、その中でOK。
+
+document.getElementById("btnExportCsv")?.addEventListener("click", exportCsv);
+
+function exportCsv() {
+  if (!lastDirections || !lastDirections.routes || !lastDirections.routes.length) {
+    alert("先にルート計算してください");
+    return;
+  }
+
+  const route = lastDirections.routes[0];
+  const legs = route.legs || [];
+
+  const rows = [];
+  rows.push(["stop_no","address","leg_distance_m","leg_duration_s","leg_distance_text","leg_duration_text"]);
+
+  const startAddress = legs[0]?.start_address || "";
+  rows.push([1, startAddress,"","","",""]);
+
+  let totalDistance = 0;
+  let totalDuration = 0;
+
+  legs.forEach((leg, i) => {
+    const distVal = leg.distance?.value ?? "";
+    const durVal  = leg.duration?.value ?? "";
+    const distTxt = leg.distance?.text ?? "";
+    const durTxt  = leg.duration?.text ?? "";
+    const endAddr = leg.end_address || "";
+
+    if (typeof distVal === "number") totalDistance += distVal;
+    if (typeof durVal === "number") totalDuration += durVal;
+
+    rows.push([i + 2, endAddr, distVal, durVal, distTxt, durTxt]);
+  });
+
+  rows.push(["TOTAL","",totalDistance,totalDuration,"",""]);
+
+  const csv = rows.map(toCsvLine).join("\n");
+  downloadText(csv, `route_${formatDateTime(new Date())}.csv`);
+}
+
+function toCsvLine(arr) {
+  return arr.map(v => {
+    const s = String(v ?? "");
+    const escaped = s.replace(/"/g, '""');
+    return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+  }).join(",");
+}
+
+function downloadText(text, filename) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatDateTime(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+/script>
 </body>
 </html>
