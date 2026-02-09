@@ -329,9 +329,12 @@
         }).join(",");
       }
 
+      // ★ここ直した（BOM付与 + text を使う）
       function downloadText(text, filename) {
-        const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+        const bom = "\uFEFF"; // Excelで文字化けしにくい
+        const blob = new Blob([bom + text], { type: "text/csv;charset=utf-8" });
         const url = URL.createObjectURL(blob);
+
         const a = document.createElement("a");
         a.href = url;
         a.download = filename;
