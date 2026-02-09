@@ -12,7 +12,7 @@
     label { display:block; font-size: 12px; color:#374151; margin-top: 10px; }
     input, textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
     textarea { min-height: 170px; resize: vertical; }
-    .row { display:flex; gap: 10px; align-items: center; margin-top: 10px; }
+    .row { display:flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
     button { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 600; }
     button.primary { border-color:#111827; }
     .muted { color:#6b7280; font-size: 12px; line-height: 1.4; margin-top: 8px; }
@@ -60,10 +60,11 @@
       </div>
 
       <div class="row">
-        <button class="primary" id="btnRoute">ルート計算</button>
-        <button id="btnClear">クリア</button>
-        <button id="btnShare" title="Googleマップで開くURLを作る">共有URL作成</button>
-      <button id="btnExportCsv" type="button">CSV出力</button>/div>
+        <button class="primary" id="btnRoute" type="button">ルート計算</button>
+        <button id="btnClear" type="button">クリア</button>
+        <button id="btnShare" type="button" title="Googleマップで開くURLを作る">共有URL作成</button>
+        <button id="btnExportCsv" type="button">CSV出力</button>
+      </div>
 
       <div class="muted">
         ・経由地最適化は便利だけど、上限（地点数）と課金区分に注意。<br/>
@@ -76,6 +77,7 @@
       <div class="summary">
         <strong>最適化後の順番</strong>
         <ol id="order"></ol>
+        <div id="orderNote" class="muted"></div>
       </div>
     </div>
 
@@ -100,6 +102,10 @@
       const errorEl = document.getElementById("error");
       const summaryEl = document.getElementById("summary");
       const orderEl = document.getElementById("order");
+      const orderNoteEl = document.getElementById("orderNote");
+
+      // CSV用：最後に成功したDirections結果を保持
+      let lastDirections = null;
 
       // オートコンプリート（入力ミス減らす）
       new google.maps.places.Autocomplete(originEl);
@@ -114,14 +120,14 @@
       const directionsService = new google.maps.DirectionsService();
       const directionsRenderer = new google.maps.DirectionsRenderer({ map });
 
-      let lastResult = null;
       let lastInputStops = [];
 
-      document.getElementById("btnRoute").addEventListener("click", async () => {
+      document.getElementById("btnRoute").addEventListener("click", () => {
         errorEl.textContent = "";
         summaryEl.textContent = "";
         orderEl.innerHTML = "";
-        lastResult = null;
+        orderNoteEl.textContent = "";
+        lastDirections = null;
 
         const origin = originEl.value.trim();
         const destination = destinationEl.value.trim();
@@ -136,7 +142,7 @@
           errorEl.textContent = "経由地が0件でも動くけど、目的が『送迎』なら最低1件は入れるとそれっぽい。";
         }
 
-        // 上限注意：一般に「最大25地点（出発/目的含む）」が目安（=経由地は最大23程度）
+        // 上限注意：最大25地点目安（出発/目的含む）
         const totalPoints = 2 + stops.length;
         if (totalPoints > 25) {
           errorEl.textContent =
@@ -167,7 +173,9 @@
               return;
             }
 
-            lastResult = result;
+            // ★ここが重要：CSV出力用に保存
+            lastDirections = result;
+
             directionsRenderer.setDirections(result);
 
             // 合計距離・時間
@@ -186,7 +194,7 @@
               `<div><strong>合計</strong>：${km} km / 約 ${min} 分</div>` +
               `<div class="muted">交通状況を強く反映させたい場合は別API/別SKU扱いになることがあります。</div>`;
 
-            // 最適化後の順番（waypoint_order は「入力waypointsの並び替え結果」）
+            // 最適化後の順番
             const order = route.waypoint_order || [];
             const optimizedStops = order.length
               ? order.map(i => lastInputStops[i])
@@ -195,10 +203,7 @@
             renderOrderList(orderEl, origin, optimizedStops, destination);
 
             if (order.length) {
-              const note = document.createElement("div");
-              note.className = "muted";
-              note.textContent = "※『最適化』ONのとき、経由地の順番が入れ替わります。";
-              orderEl.parentElement.appendChild(note);
+              orderNoteEl.textContent = "※『最適化』ONのとき、経由地の順番が入れ替わります。";
             }
           }
         );
@@ -211,8 +216,9 @@
         errorEl.textContent = "";
         summaryEl.textContent = "";
         orderEl.innerHTML = "";
+        orderNoteEl.textContent = "";
         directionsRenderer.setDirections({ routes: [] });
-        lastResult = null;
+        lastDirections = null;
         lastInputStops = [];
       });
 
@@ -229,20 +235,56 @@
 
         // ルート計算済みなら「最適化後の順」でURL化
         let stopsForUrl = stops;
-        if (lastResult?.routes?.[0]) {
-          const order = lastResult.routes[0].waypoint_order || [];
+        if (lastDirections?.routes?.[0]) {
+          const order = lastDirections.routes[0].waypoint_order || [];
           if (order.length) stopsForUrl = order.map(i => stops[i]);
         }
 
         const url = makeGoogleMapsDirectionsUrl(origin, destination, stopsForUrl);
-        // クリップボードへ
+
         try {
           await navigator.clipboard.writeText(url);
-          summaryEl.innerHTML = `<div><strong>共有URL</strong>をコピーしました（Googleマップで開けます）</div><div class="muted">URLはコード内の makeGoogleMapsDirectionsUrl を参照</div>`;
+          summaryEl.innerHTML = `<div><strong>共有URL</strong>をコピーしました（Googleマップで開けます）</div><div class="muted">URLは makeGoogleMapsDirectionsUrl を参照</div>`;
         } catch {
-          // だめなら表示
           summaryEl.innerHTML = `<div><strong>共有URL</strong>（コピーできない場合は手動で）</div><div style="word-break:break-all">${escapeHtml(url)}</div>`;
         }
+      });
+
+      document.getElementById("btnExportCsv").addEventListener("click", () => {
+        if (!lastDirections || !lastDirections.routes?.length) {
+          alert("先にルート計算してください");
+          return;
+        }
+
+        const route = lastDirections.routes[0];
+        const legs = route.legs || [];
+
+        const rows = [];
+        rows.push(["stop_no","address","leg_distance_m","leg_duration_s","leg_distance_text","leg_duration_text"]);
+
+        const startAddress = legs[0]?.start_address || "";
+        rows.push([1, startAddress,"","","",""]);
+
+        let totalDistance = 0;
+        let totalDuration = 0;
+
+        legs.forEach((leg, i) => {
+          const distVal = leg.distance?.value ?? "";
+          const durVal  = leg.duration?.value ?? "";
+          const distTxt = leg.distance?.text ?? "";
+          const durTxt  = leg.duration?.text ?? "";
+          const endAddr = leg.end_address || "";
+
+          if (typeof distVal === "number") totalDistance += distVal;
+          if (typeof durVal === "number") totalDuration += durVal;
+
+          rows.push([i + 2, endAddr, distVal, durVal, distTxt, durTxt]);
+        });
+
+        rows.push(["TOTAL","",totalDistance,totalDuration,"",""]);
+
+        const csv = rows.map(toCsvLine).join("\n");
+        downloadText(csv, `route_${formatDateTime(new Date())}.csv`);
       });
 
       function parseStops(text) {
@@ -263,7 +305,6 @@
       }
 
       // Googleマップで開く「経路URL」
-      // 注意：Googleマップ側にも経由地上限があります（多すぎると開けない/省略される場合あり）
       function makeGoogleMapsDirectionsUrl(origin, destination, stops) {
         const base = "https://www.google.com/maps/dir/?api=1";
         const params = new URLSearchParams();
@@ -279,76 +320,32 @@
           "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
         }[c]));
       }
+
+      function toCsvLine(arr) {
+        return arr.map(v => {
+          const s = String(v ?? "");
+          const escaped = s.replace(/"/g, '""');
+          return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+        }).join(",");
+      }
+
+      function downloadText(text, filename) {
+        const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function formatDateTime(d) {
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+      }
     }
-  <script>
-let lastDirections = null;
-
-// どこかで directionsService.route の成功時に lastDirections = result; を入れてね
-// もし既に result を表示してる関数があるなら、その中でOK。
-
-document.getElementById("btnExportCsv")?.addEventListener("click", exportCsv);
-
-function exportCsv() {
-  if (!lastDirections || !lastDirections.routes || !lastDirections.routes.length) {
-    alert("先にルート計算してください");
-    return;
-  }
-
-  const route = lastDirections.routes[0];
-  const legs = route.legs || [];
-
-  const rows = [];
-  rows.push(["stop_no","address","leg_distance_m","leg_duration_s","leg_distance_text","leg_duration_text"]);
-
-  const startAddress = legs[0]?.start_address || "";
-  rows.push([1, startAddress,"","","",""]);
-
-  let totalDistance = 0;
-  let totalDuration = 0;
-
-  legs.forEach((leg, i) => {
-    const distVal = leg.distance?.value ?? "";
-    const durVal  = leg.duration?.value ?? "";
-    const distTxt = leg.distance?.text ?? "";
-    const durTxt  = leg.duration?.text ?? "";
-    const endAddr = leg.end_address || "";
-
-    if (typeof distVal === "number") totalDistance += distVal;
-    if (typeof durVal === "number") totalDuration += durVal;
-
-    rows.push([i + 2, endAddr, distVal, durVal, distTxt, durTxt]);
-  });
-
-  rows.push(["TOTAL","",totalDistance,totalDuration,"",""]);
-
-  const csv = rows.map(toCsvLine).join("\n");
-  downloadText(csv, `route_${formatDateTime(new Date())}.csv`);
-}
-
-function toCsvLine(arr) {
-  return arr.map(v => {
-    const s = String(v ?? "");
-    const escaped = s.replace(/"/g, '""');
-    return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
-  }).join(",");
-}
-
-function downloadText(text, filename) {
-  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function formatDateTime(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-}
-/script>
+  </script>
 </body>
 </html>
